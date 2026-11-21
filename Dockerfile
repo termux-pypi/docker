@@ -1,5 +1,5 @@
 ARG BASE_TAG=aarch64
-FROM termux/termux-docker:${BASE_TAG} AS base
+FROM docker.io/termux/termux-docker:${BASE_TAG} AS base
 
 ARG SYSTEM_PYTHON=3.14
 ARG PYTHON_VERSION=3.14
