@@ -1,0 +1,125 @@
+name: Build and Publish Images
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        py: ['3.14']
+        arch:
+          - tag: x86_64
+            base: x86_64
+            runner: ubuntu-26.04
+            platform: linux/amd64
+            qemu: false
+          - tag: x86
+            base: i686
+            runner: ubuntu-26.04
+            platform: linux/386
+            qemu: false
+          - tag: arm64
+            base: aarch64
+            runner: ubuntu-26.04-arm
+            platform: linux/arm64
+            qemu: false
+          - tag: armeabi
+            base: arm
+            runner: ubuntu-26.04
+            platform: linux/arm/v7
+            qemu: true
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for armeabi)
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push python (${{ matrix.py }}-${{ matrix.arch.tag }})
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: python
+          platforms: ${{ matrix.arch.platform }}
+          push: true
+          provenance: false
+          tags: ghcr.io/termux-pypi/python:${{ matrix.py }}-${{ matrix.arch.tag }}
+          build-args: |
+            BASE_TAG=${{ matrix.arch.base }}
+            PYTHON_VERSION=${{ matrix.py }}
+
+      - name: Build and push python-builder (${{ matrix.py }}-${{ matrix.arch.tag }})
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: builder
+          platforms: ${{ matrix.arch.platform }}
+          push: true
+          provenance: false
+          tags: ghcr.io/termux-pypi/python-builder:${{ matrix.py }}-${{ matrix.arch.tag }}
+          build-args: |
+            BASE_TAG=${{ matrix.arch.base }}
+            PYTHON_VERSION=${{ matrix.py }}
+
+  merge:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        py: ['3.14']
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifests
+        env:
+          PY: ${{ matrix.py }}
+        run: |
+          for img in python python-builder; do
+            REPO="ghcr.io/termux-pypi/${img}"
+
+            EXTRA_TAGS=""
+            if [ "$PY" = "3.14" ]; then
+              EXTRA_TAGS="-t ${REPO}:latest"
+            fi
+
+            docker buildx imagetools create \
+              -t "${REPO}:${PY}" \
+              ${EXTRA_TAGS} \
+              "${REPO}:${PY}-x86_64" \
+              "${REPO}:${PY}-x86" \
+              "${REPO}:${PY}-arm64" \
+              "${REPO}:${PY}-armeabi"
+          done
